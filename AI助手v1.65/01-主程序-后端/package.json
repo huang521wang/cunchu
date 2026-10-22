@@ -1,0 +1,24 @@
+{
+  "name": "long-app-server",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server/server.js",
+    "build:web": "npm --prefix web run build",
+    "e2e:serve": "npm run build:web && node server/server.js",
+    "test:server": "node --test",
+    "test:e2e": "playwright test",
+    "test": "npm run test:server && npm run test:e2e"
+  },
+  "dependencies": {
+    "compression": "^1.8.2",
+    "express": "^4.21.2",
+    "imapflow": "^2.5.8",
+    "mailparser": "^3.10.0",
+    "ssh2": "^1.17.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.0"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "appId": "在这里填机器人的 AppID（纯数字）",
+  "secret": "在这里填 AppSecret（推荐，机器人后台「开发设置」里复制）",
+  "token": "",
+  "sandbox": true,
+  "workbench": "http://127.0.0.1:8787"
+}
