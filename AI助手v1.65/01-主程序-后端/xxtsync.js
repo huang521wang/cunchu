@@ -125,7 +125,7 @@ export function parseTaskList(html, kind) {
  * 不让一轮同步无限拖（旧版课多+网络慢时能跑半小时，和下一轮/任务操作撞车）。
  * 返回 { ok, status: 'synced'|'partial'|'need_login'|'error', newCount, courses, fails, error }
  */
-export async function syncXxt({ cookie, fetchImpl = fetch, loadPage, onItem, maxCourses = 20, base = 'https://i.chaoxing.com', budgetMs = 8 * 60 * 1000, sleepImpl = sleep, deadlineAt = 0 }) {
+export async function syncXxt({ cookie, fetchImpl = fetch, loadPage, onItem, maxCourses = 20, base = 'https://i.chaoxing.com', budgetMs = 8 * 60 * 1000, sleepImpl = sleep, deadlineAt = 0, onlyCourseIds = null, onCourses = null }) {
   const deadline = Number(deadlineAt) > 0 ? Number(deadlineAt) : Date.now() + Math.max(30000, Number(budgetMs) || 8 * 60 * 1000);
   const call = async (url) =>
     fetchImpl(url, {
@@ -172,7 +172,19 @@ export async function syncXxt({ cookie, fetchImpl = fetch, loadPage, onItem, max
     return { ok: false, status: 'need_login', newCount: 0, courses: 0, error: '页面要求重新登录' };
   }
 
-  const courses = parseCourseList(home.html).slice(0, maxCourses);
+  const allCourses = parseCourseList(home.html);
+  // 课程目录先交出去（工作台要能列出"我的课程"供勾选）；回调炸了不许拖垮同步
+  try {
+    if (onCourses) await onCourses(allCourses);
+  } catch {
+    /* 目录保存失败：同步继续 */
+  }
+  let courses = allCourses;
+  if (Array.isArray(onlyCourseIds) && onlyCourseIds.length) {
+    const want = new Set(onlyCourseIds.map((s) => String(s)));
+    courses = courses.filter((c) => want.has(String(c.courseid)) || want.has(`${c.courseid}:${c.clazzid}`)); // 按 courseid 或 courseid:clazzid 勾选
+  }
+  courses = courses.slice(0, maxCourses);
   let newCount = 0;
   let partial = false;
   let doneCourses = 0;

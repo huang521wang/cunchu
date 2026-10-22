@@ -1686,7 +1686,7 @@ export function createApp(store) {
     }
   }
 
-  async function xxtSyncOnce() {
+  async function xxtSyncOnce(opts = {}) {
     if (xxtSyncBusy) return { ok: true, skipped: 'busy' };
     const x = store.db.settings.xxt;
     if (!x.cookie) return { ok: false, error: '还没连接学习通' };
@@ -1710,6 +1710,15 @@ export function createApp(store) {
         r = await syncXxt({
           cookie: x.cookie,
           loadPage: loader ? loader.loadPage : undefined,
+          onlyCourseIds: Array.isArray(opts.onlyCourseIds) && opts.onlyCourseIds.length ? opts.onlyCourseIds : undefined,
+          // 课程目录落库（工作台"选课程"要用的）：按 courseid:clazzid 合并，最新的赢
+          onCourses: async (list) => {
+            const byKey = new Map((x.courses || []).map((c) => [`${c.courseid}:${c.clazzid}`, { ...c }]));
+            for (const c of list) byKey.set(`${c.courseid}:${c.clazzid}`, { courseid: c.courseid, clazzid: c.clazzid, name: c.name, cpi: c.cpi, seenAt: Date.now() });
+            x.courses = [...byKey.values()].slice(-80);
+            x.coursesAt = Date.now();
+            store.save();
+          },
           onItem: async (item) => {
             try {
               return await xxtHandleNotice(item);
@@ -1775,12 +1784,70 @@ export function createApp(store) {
   app.post('/api/xxt/sync', async (req, res) => {
     const x = store.db.settings.xxt;
     if (!x.cookie) return res.status(409).json({ error: '还没连接学习通' });
+    // 可选勾选：{courseids:["501","502:602",...]}——只同步选中的课（按 courseid 或 courseid:clazzid）
+    const b = req.body && isObject(req.body) ? req.body : {};
+    let ids;
+    if ('courseids' in b) {
+      if (!Array.isArray(b.courseids) || b.courseids.length > 40 || !b.courseids.every((s) => /^[\w:,-]{1,40}$/.test(String(s)))) {
+        return res.status(400).json({ error: 'courseids 要是不超过 40 项的字符串数组' });
+      }
+      ids = b.courseids.map(String);
+    }
     if (['error', 'synced', 'ready'].includes(x.status) || x.cookie) {
-      const r = await xxtSyncOnce();
+      const r = await xxtSyncOnce({ onlyCourseIds: ids });
       res.json(r);
       return;
     }
     res.status(409).json({ error: x.syncMsg || '当前状态不能同步' });
+  });
+
+  // 课程目录：同步时自动落库；每门课带作业统计，供工作台勾选/逐课制作
+  app.get('/api/xxt/courses', (req, res) => {
+    const x = store.db.settings.xxt;
+    const hw = store.db.settings.xxtHomeworks || [];
+    const statsOf = (name) => {
+      const mine = hw.filter((h) => h && h.course === name);
+      return { total: mine.length, pending: mine.filter((h) => h.status !== 'submitted').length, submitted: mine.filter((h) => h.status === 'submitted').length };
+    };
+    res.json({ coursesAt: x.coursesAt || 0, courses: (x.courses || []).map((c) => ({ ...c, stats: statsOf(c.name) })) });
+  });
+
+  // 作业清单（摘要）+ 单条详情（含题干/草稿全文）——工作台"看老师发的作业和内容"靠这两个
+  app.get('/api/xxt/homeworks', (req, res) => {
+    const hw = (store.db.settings.xxtHomeworks || []).slice().reverse();
+    res.json({
+      homeworks: hw.map((h) => ({
+        id: h.id,
+        title: h.title,
+        course: h.course,
+        due: h.due || '',
+        status: h.status,
+        needUpload: !!h.needUpload,
+        hasDraft: !!h.draft,
+        readAt: h.readAt || 0, // 读过题干的时间戳：0=只有同步抓到的一句话，工作台可提示"点读题看老师原文"
+        draftLen: (h.draft || '').length,
+        requirementLen: (h.requirement || '').length,
+        hasProof: !!h.proof,
+        submitHint: h.submitHint || '',
+        submittedAt: h.submittedAt || 0,
+        updatedAt: h.updatedAt || 0,
+      })),
+    });
+  });
+
+  app.get('/api/xxt/homeworks/:id', (req, res) => {
+    const h = findHw(String(req.params.id || ''));
+    if (!h) return res.status(404).json({ error: '找不到这份作业' });
+    res.json({ homework: { ...h, proof: h.proof ? `${h.id}.png` : '' } });
+  });
+
+  // 提交留证截图：路径只由库里的 uuid 拼出，参数本身不进路径（防穿越）
+  app.get('/api/xxt/proof/:id', (req, res) => {
+    const h = findHw(String(req.params.id || ''));
+    if (!h || !h.proof) return res.status(404).json({ error: '这份作业还没有留证截图' });
+    const file = path.join(store.dataDir, 'xxt-proof', `${h.id}.png`);
+    if (!fs.existsSync(file)) return res.status(404).json({ error: '截图文件不在了' });
+    res.type('png').sendFile(file);
   });
 
   // 一键退出：删 Cookie（已入库的计划/草稿保留）
@@ -2008,6 +2075,7 @@ export function createApp(store) {
       if (r.ok) {
         h.requirement = String(r.text).slice(0, 2000);
         h.needUpload = !!r.upload;
+        h.readAt = Date.now(); // 题干到手：工作台据此区分"老师原文"和"同步一句话"
         // 读到题了 → 直接按完整要求重做草稿（用户要求：来了就做，别等催）
         xxtLog(`已读到「${h.title}」题干 ${h.requirement.length} 字，重生成草稿`);
         xxtMakeDraft(h, '').catch((e) => xxtLog('草稿重生成异常：' + (e && e.message)));
